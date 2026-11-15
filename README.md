@@ -91,12 +91,38 @@ npm run dev
 
 ### Releasing a new version
 
-Push a tag starting with `v`: the [release workflow](.github/workflows/release.yml) builds the macOS (universal) and Windows installers on GitHub Actions and attaches them to a new GitHub release. The version number comes from the tag.
+Releases are built by GitHub Actions ([release workflow](.github/workflows/release.yml)) every time you push a tag starting with `v`.
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+git commit -am "Describe the changes"
+git push
+git tag v1.1.0
+git push origin v1.1.0
 ```
+
+What happens next (about 5 minutes, follow it in the **Actions** tab):
+
+1. Two builds run in parallel: one on macOS, one on Windows.
+2. The app version is taken from the tag (`v1.1.0` → `1.1.0`), so you don't need to bump it in `tauri.conf.json` or `Cargo.toml` by hand.
+3. A GitHub release named *TrackLoot v1.1.0* is created, with download instructions and these files:
+
+| File | For |
+|---|---|
+| `TrackLoot_x.y.z_universal.dmg` | macOS, Apple Silicon and Intel |
+| `TrackLoot_x.y.z_x64-setup.exe` | Windows installer (recommended) |
+| `TrackLoot_x.y.z_x64_en-US.msi` | Windows, for managed installs |
+| `TrackLoot_universal.app.tar.gz` | macOS app as an archive, for scripts and updaters |
+
+**If a build fails**, fix the problem, then delete the release and the tag and push the tag again on the new commit:
+
+```bash
+gh release delete v1.1.0 --yes
+git push origin :refs/tags/v1.1.0
+git tag -f v1.1.0
+git push origin v1.1.0
+```
+
+Builds are not code-signed (that needs a paid Apple Developer account and a Windows certificate), which is why users see the warnings described in [Download](#download).
 
 ## Usage
 
