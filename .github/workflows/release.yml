@@ -1,0 +1,79 @@
+# Pubblica una release con gli installer per macOS e Windows.
+# Si avvia facendo il push di un tag, es:  git tag v1.0.0 && git push origin v1.0.0
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: --target universal-apple-darwin
+          - platform: windows-latest
+            args: ""
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - run: npm ci
+
+      # la versione dell'app la decide il tag (v1.2.3 → 1.2.3)
+      - name: Set version from tag
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          node -e "
+            const fs = require('fs');
+            const p = 'src-tauri/tauri.conf.json';
+            const c = JSON.parse(fs.readFileSync(p));
+            c.version = process.argv[1];
+            fs.writeFileSync(p, JSON.stringify(c, null, 2));
+          " "$VERSION"
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: TrackLoot ${{ github.ref_name }}
+          releaseBody: |
+            ## Download
+
+            | System | File |
+            |---|---|
+            | **macOS** (Apple Silicon & Intel) | `TrackLoot_*_universal.dmg` |
+            | **Windows** 10/11 | `TrackLoot_*_x64-setup.exe` (or the `.msi`) |
+
+            On first launch TrackLoot downloads the tools it needs (yt-dlp, ffmpeg, deno) with one click.
+
+            **macOS:** the app isn't notarized by Apple yet. If macOS says it's damaged or can't be opened, run this once in Terminal:
+            ```
+            xattr -dr com.apple.quarantine /Applications/TrackLoot.app
+            ```
+
+            **Windows:** if SmartScreen shows "Windows protected your PC", click **More info → Run anyway**.
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
