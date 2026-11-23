@@ -26,7 +26,7 @@
 - **Real quality check**: every download gets a *High / Medium / Low* label based on the source bitrate **and** a spectral analysis of the file, so a 128 kbps rip re-encoded to 320 is still flagged as low quality.
 - **BPM**: every track gets its tempo, shown in the app and written to the mp3's BPM tag (read by Rekordbox, Serato, Music…). It's estimated offline from the audio, no online service needed.
 - **No duplicates**: a local history remembers what you already downloaded. Re-pasting a link tells you it's already there; playlists and sets skip the tracks you already have.
-- **Clipboard watch**: copy a link anywhere and TrackLoot offers to download it (or downloads it straight away, if you turn on auto-download).
+- **Clipboard watch**: copy a link anywhere and TrackLoot offers to download it (or downloads it straight away, if you turn on auto-download). It keeps watching while TrackLoot is in the background, and a system notification tells you about the link and when the download is done.
 - **Drag & drop**: drop a link from your browser or the Spotify app onto the window.
 - **Nothing else to install**: on first launch TrackLoot downloads the tools it needs ([yt-dlp](https://github.com/yt-dlp/yt-dlp), [ffmpeg](https://ffmpeg.org), [Deno](https://deno.com)) with one click, and updates yt-dlp from Settings.
 - **Light**: ~6 MB installer, uses the system WebView, light and dark mode.
@@ -133,12 +133,12 @@ Builds are not code-signed (that needs a paid Apple Developer account and a Wind
 ## Usage
 
 1. Open TrackLoot.
-2. Paste a SoundCloud or Spotify link (track, album, playlist or set) and press **Download**. You can also drop the link onto the window, or just copy it while clipboard watch is on.
+2. Paste a SoundCloud, YouTube or Spotify link (track, album, playlist or set) and press **Download**. You can also drop the link onto the window, or just copy it while clipboard watch is on.
 3. The mp3 lands in your Downloads folder as `Artist - Title.mp3`.
 
-The **History** tab lists everything you downloaded, with its quality. The ✕ next to a track removes it from the history, so you can download it again.
+The **History** tab lists everything you downloaded, with its quality and BPM. The ✕ next to a track removes it from the history, so you can download it again.
 
-In **Settings** (the gear icon) you'll find clipboard watch, auto-download and the yt-dlp version, with an update button.
+In **Settings** (the gear icon) you'll find clipboard watch, auto-download, notifications and the yt-dlp version, with an update button.
 
 ### Where things are stored
 

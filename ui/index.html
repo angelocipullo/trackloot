@@ -166,6 +166,10 @@
         <input type="checkbox" class="switch" id="opt-auto">
       </div>
       <div class="row">
+        <div class="grow"><b>Notifications</b><small>When a link is copied or a download ends while TrackLoot is in the background</small></div>
+        <input type="checkbox" class="switch" id="opt-notify">
+      </div>
+      <div class="row">
         <div class="grow"><b>yt-dlp</b><small id="ytdlp-info">Checking…</small></div>
         <button class="btn" id="update-btn">Update</button>
       </div>
@@ -213,7 +217,7 @@
   </div>
 </main>
 <footer>
-  <span id="foot-tools"></span>
+  <span><span id="foot-version"></span><span id="foot-tools"></span></span>
   <span>Created by <a data-site>GANGE</a> · <a data-site>www.gange.wtf</a></span>
 </footer>
 
@@ -221,6 +225,7 @@
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
 const invoke = window.__TAURI__.core.invoke;
+window.__TAURI__.app.getVersion().then(v => $('#foot-version').textContent = `TrackLoot ${v}`);
 const list = $('#list');
 let first = true;
 
@@ -238,8 +243,14 @@ const store = {
 };
 $('#opt-watch').checked = store.get('watch', true);
 $('#opt-auto').checked = store.get('auto', false);
-$('#opt-watch').onchange = e => store.set('watch', e.target.checked);
-$('#opt-auto').onchange = e => store.set('auto', e.target.checked);
+$('#opt-notify').checked = store.get('notify', true);
+// gli appunti li controlla il backend (anche con la finestra in secondo piano)
+const sendOptions = () => invoke('set_options', {
+  watch: $('#opt-watch').checked, auto: $('#opt-auto').checked, notify: $('#opt-notify').checked,
+});
+for (const k of ['watch', 'auto', 'notify']) {
+  $('#opt-' + k).onchange = e => { store.set(k, e.target.checked); sendOptions(); };
+}
 $('#gear').onclick = () => {
   $('#settings').hidden = !$('#settings').hidden;
   $('#gear').classList.toggle('on', !$('#settings').hidden);
@@ -270,7 +281,7 @@ async function refreshTools() {
     : 'Not installed';
   $('#update-btn').disabled = busy;
   $('#update-btn').textContent = busy ? 'Updating…' : 'Update';
-  $('#foot-tools').textContent = t.ytdlp ? `yt-dlp ${t.ytdlp}` : '';
+  $('#foot-tools').textContent = t.ytdlp ? ` · yt-dlp ${t.ytdlp}` : '';
   if (busy) setTimeout(refreshTools, 400);
 }
 async function install(updateYtdlp) {
@@ -325,30 +336,27 @@ async function start(url, force = false) {
 }
 
 // ---------- appunti ----------
-let lastClip = null, clipUrl = null;
+let clipUrl = null;
 const hideClip = () => { $('#clip').hidden = true; clipUrl = null; };
 $('#clip-x').onclick = hideClip;
 $('#clip-go').onclick = () => clipUrl && start(clipUrl);
 
-async function pollClipboard() {
-  if ($('#opt-watch').checked) {
-    const text = await invoke('read_clipboard').catch(() => '');
-    const isFirst = lastClip === null;
-    if (text !== lastClip) {
-      lastClip = text;
-      if (source(text) && text !== $('#url').value.trim()) {
-        if ($('#opt-auto').checked && !isFirst) start(text);
-        else {
-          clipUrl = text;
-          $('#clip-url').textContent = text;
-          $('#clip').hidden = false;
-        }
-      }
-    }
-  }
-  setTimeout(pollClipboard, 1200);
-}
-pollClipboard();
+const showClip = ({ payload: url }) => {
+  if (url === $('#url').value.trim()) return;
+  clipUrl = url;
+  $('#clip-url').textContent = url;
+  $('#clip').hidden = false;
+};
+// auto-download: il backend ha già avviato il download
+const trackStarted = ({ payload: { id, url } }) => {
+  if (url === clipUrl) hideClip();
+  showTab('downloads');
+  track(id, source(url));
+};
+const { listen } = window.__TAURI__.event;
+// il backend inizia a leggere gli appunti solo dopo aver ricevuto le opzioni:
+// così gli ascoltatori sono già pronti
+Promise.all([listen('clipboard-link', showClip), listen('job-started', trackStarted)]).then(sendOptions);
 
 // ---------- qualità ----------
 function qualityHtml(q) {

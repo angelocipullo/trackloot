@@ -19,9 +19,11 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_clipboard_manager::ClipboardExt;
+use tauri_plugin_notification::NotificationExt;
 use tools::cmd;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -93,6 +95,11 @@ struct AppState {
 }
 
 static HISTORY: Mutex<Vec<HistoryEntry>> = Mutex::new(Vec::new());
+
+// impostazioni scelte nell'interfaccia (vedi set_options)
+static WATCH_CLIPBOARD: AtomicBool = AtomicBool::new(false);
+static AUTO_DOWNLOAD: AtomicBool = AtomicBool::new(false);
+static NOTIFY: AtomicBool = AtomicBool::new(false);
 
 fn update(jobs: &Jobs, id: &str, f: impl FnOnce(&mut Job)) {
     if let Some(job) = jobs.lock().unwrap().get_mut(id) {
@@ -573,19 +580,27 @@ fn spotify_track(jobs: &Jobs, id: &str, it: &SpotifyItem, n: usize,
 
 // ---------- job ----------
 
-fn is_youtube(url: &str) -> bool {
-    Regex::new(r"^https?://(([\w-]+\.)?youtube\.com|youtu\.be)/").unwrap().is_match(url)
+/// "soundcloud", "youtube" o "spotify", se il link è supportato.
+fn link_source(url: &str) -> Option<&'static str> {
+    [
+        ("soundcloud", r"^https?://([\w-]+\.)?(soundcloud\.com|snd\.sc)/"),
+        ("youtube", r"^https?://(([\w-]+\.)?youtube\.com|youtu\.be)/"),
+        ("spotify", r"^https?://(open\.spotify\.com|spotify\.link)/"),
+    ]
+    .into_iter()
+    .find(|(_, re)| Regex::new(re).unwrap().is_match(url))
+    .map(|(name, _)| name)
 }
 
 fn run_job(jobs: Jobs, id: String, url: String, force: bool) {
-    if url.contains("spotify.") {
-        if let Err(e) = run_spotify(&jobs, &id, &url, force) {
-            update(&jobs, &id, |j| j.message = format!("Error: {e}"));
+    match link_source(&url) {
+        Some("spotify") => {
+            if let Err(e) = run_spotify(&jobs, &id, &url, force) {
+                update(&jobs, &id, |j| j.message = format!("Error: {e}"));
+            }
         }
-    } else if is_youtube(&url) {
-        run_direct(&jobs, &id, &url, "youtube", force);
-    } else {
-        run_direct(&jobs, &id, &url, "soundcloud", force);
+        Some(source) => run_direct(&jobs, &id, &url, source, force),
+        None => update(&jobs, &id, |j| j.message = "Unsupported link".into()),
     }
     update(&jobs, &id, |j| {
         let extra = |j: &Job| {
@@ -634,15 +649,16 @@ fn run_job(jobs: Jobs, id: String, url: String, force: bool) {
 // ---------- comandi per l'interfaccia ----------
 
 #[tauri::command]
-fn start_download(url: String, force: bool, state: tauri::State<AppState>) -> Result<String, String> {
+fn start_download(url: String, force: bool, app: AppHandle) -> Result<String, String> {
     let url = url.trim().to_string();
-    let valid = Regex::new(
-        r"^https?://(([\w-]+\.)?(soundcloud\.com|snd\.sc|youtube\.com)|youtu\.be|open\.spotify\.com|spotify\.link)/",
-    )
-    .unwrap();
-    if !valid.is_match(&url) {
+    if link_source(&url).is_none() {
         return Err("Paste a SoundCloud, YouTube or Spotify link".into());
     }
+    Ok(spawn_job(&app, url, force))
+}
+
+fn spawn_job(app: &AppHandle, url: String, force: bool) -> String {
+    let state = app.state::<AppState>();
     let id = state.counter.fetch_add(1, Ordering::Relaxed).to_string();
     state.jobs.lock().unwrap().insert(id.clone(), Job {
         id: id.clone(),
@@ -657,9 +673,15 @@ fn start_download(url: String, force: bool, state: tauri::State<AppState>) -> Re
         total: None,
     });
     let jobs = state.jobs.clone();
-    let job_id = id.clone();
-    std::thread::spawn(move || run_job(jobs, job_id, url, force));
-    Ok(id)
+    let (app, job_id) = (app.clone(), id.clone());
+    std::thread::spawn(move || {
+        run_job(jobs.clone(), job_id.clone(), url, force);
+        let job = jobs.lock().unwrap().get(&job_id).cloned();
+        if let Some(j) = job {
+            notify_done(&app, &j);
+        }
+    });
+    id
 }
 
 #[tauri::command]
@@ -704,8 +726,82 @@ fn open_site() {
 }
 
 #[tauri::command]
-fn read_clipboard(app: tauri::AppHandle) -> String {
-    app.clipboard().read_text().unwrap_or_default().trim().chars().take(2000).collect()
+fn set_options(watch: bool, auto: bool, notify: bool) {
+    WATCH_CLIPBOARD.store(watch, Ordering::Relaxed);
+    AUTO_DOWNLOAD.store(auto, Ordering::Relaxed);
+    NOTIFY.store(notify, Ordering::Relaxed);
+}
+
+// ---------- appunti e notifiche ----------
+
+/// Notifica di sistema, solo se l'utente non sta guardando la finestra
+/// (altrimenti basta quello che mostra l'interfaccia).
+fn notify(app: &AppHandle, title: &str, body: &str) {
+    let focused = app.get_webview_window("main")
+        .is_some_and(|w| w.is_focused().unwrap_or(false) && w.is_visible().unwrap_or(false));
+    if NOTIFY.load(Ordering::Relaxed) && !focused {
+        let _ = app.notification().builder().title(title).body(body).show();
+    }
+}
+
+fn notify_done(app: &AppHandle, j: &Job) {
+    let track = j.tracks.first().map(|t| match t.uploader.as_str() {
+        "" => t.title.clone(),
+        a => format!("{a} - {}", t.title),
+    }).unwrap_or_default();
+    match j.status.as_str() {
+        "done" if j.files.len() == 1 => {
+            let f = &j.files[0];
+            let details: Vec<String> = [
+                f.bpm.map(|b| format!("{b} BPM")),
+                f.quality.as_ref().map(|q| format!("{} quality", q.label)),
+            ].into_iter().flatten().collect();
+            let body = if details.is_empty() { track } else { format!("{track}\n{}", details.join(" · ")) };
+            notify(app, "Downloaded", &body);
+        }
+        "done" => notify(app, &format!("Downloaded {} tracks", j.files.len()), &j.message),
+        "skipped" => notify(app, "Already downloaded", &track),
+        _ => notify(app, "Download failed", &j.message),
+    }
+}
+
+fn source_name(source: &str) -> &'static str {
+    match source {
+        "youtube" => "YouTube",
+        "spotify" => "Spotify",
+        _ => "SoundCloud",
+    }
+}
+
+/// Controlla gli appunti ogni secondo, anche con la finestra in secondo piano.
+/// Un link supportato viene scaricato subito (auto-download) o proposto
+/// all'interfaccia; il link già presente all'avvio viene solo proposto.
+fn watch_clipboard(app: AppHandle) {
+    let mut last: Option<String> = None;
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+        if !WATCH_CLIPBOARD.load(Ordering::Relaxed) {
+            continue;
+        }
+        let text: String = app.clipboard().read_text().unwrap_or_default().trim().chars().take(2000).collect();
+        if last.as_ref() == Some(&text) {
+            continue;
+        }
+        let first = last.is_none();
+        last = Some(text.clone());
+        let Some(source) = link_source(&text) else { continue };
+        let name = source_name(source);
+        if AUTO_DOWNLOAD.load(Ordering::Relaxed) && !first {
+            let id = spawn_job(&app, text.clone(), false);
+            let _ = app.emit("job-started", serde_json::json!({ "id": id, "url": text }));
+            notify(&app, &format!("Downloading {name} link"), &text);
+        } else {
+            let _ = app.emit("clipboard-link", &text);
+            if !first {
+                notify(&app, &format!("{name} link copied"), "Open TrackLoot to download it");
+            }
+        }
+    }
 }
 
 #[tauri::command(async)]
@@ -759,10 +855,16 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(AppState { jobs: Arc::default(), counter: AtomicU64::new(1) })
+        .setup(|app| {
+            let handle = app.handle().clone();
+            std::thread::spawn(move || watch_clipboard(handle));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             start_download, get_job, get_history, remove_history, reveal, open_folder,
-            open_site, read_clipboard, tools_status, install_tools
+            open_site, set_options, tools_status, install_tools
         ])
         .run(tauri::generate_context!())
         .expect("error while starting TrackLoot");
