@@ -8,7 +8,7 @@
   :root {
     --bg: #f6f5f3; --card: #fff; --text: #1c1b1a; --muted: #77736e; --faint: #a8a39d;
     --line: #e6e3df; --accent: #ff5500; --accent-ink: #fff; --err: #c62828; --ok: #1f9d55;
-    --warn: #b26a00; --sc: #ff5500; --sp: #1db954;
+    --warn: #b26a00; --sc: #ff5500; --sp: #1db954; --yt: #ff0033;
   }
   @media (prefers-color-scheme: dark) {
     :root { --bg: #141312; --card: #1e1d1b; --text: #f1efec; --muted: #9a958f; --faint: #6c6863;
@@ -75,6 +75,7 @@
   .badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
   .badge.sc { display: flex; color: var(--sc); background: color-mix(in srgb, var(--sc) 12%, transparent); }
   .badge.sp { display: flex; color: var(--sp); background: color-mix(in srgb, var(--sp) 14%, transparent); }
+  .badge.yt { display: flex; color: var(--yt); background: color-mix(in srgb, var(--yt) 12%, transparent); }
   #go { padding: 0 20px; border-radius: 10px; background: var(--accent); color: var(--accent-ink);
         font-weight: 600; transition: filter .15s, transform .05s; }
   #go:hover { filter: brightness(1.06); }
@@ -98,7 +99,7 @@
   .art { width: 52px; height: 52px; border-radius: 7px; background: var(--line) center/cover; position: relative; }
   .src { position: absolute; right: -3px; bottom: -3px; width: 14px; height: 14px; border-radius: 50%;
          border: 2px solid var(--card); }
-  .src.sc { background: var(--sc); } .src.sp { background: var(--sp); }
+  .src.sc { background: var(--sc); } .src.sp { background: var(--sp); } .src.yt { background: var(--yt); }
   .meta { min-width: 0; }
   .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .artist, .status { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -113,6 +114,8 @@
   .q.High { color: var(--ok); background: color-mix(in srgb, var(--ok) 13%, transparent); }
   .q.Medium { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
   .q.Low, .q.Very.low { color: var(--err); background: color-mix(in srgb, var(--err) 12%, transparent); }
+  .bpm { display: inline-flex; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 99px;
+         margin: 4px 0 0 6px; cursor: help; color: var(--muted); background: color-mix(in srgb, var(--muted) 12%, transparent); }
   .q-warn { color: var(--warn); font-size: 11px; margin-left: 6px; }
   .x { width: 26px; height: 26px; border-radius: 6px; background: none; color: var(--faint); display: grid; place-items: center; }
   .x:hover { color: var(--err); background: color-mix(in srgb, var(--err) 10%, transparent); }
@@ -136,7 +139,7 @@
       </div>
       <div class="grow" data-tauri-drag-region>
         <h1>TrackLoot</h1>
-        <p class="sub">SoundCloud &amp; Spotify → mp3 with artwork, straight to Downloads.</p>
+        <p class="sub">SoundCloud, YouTube &amp; Spotify → mp3 with artwork, straight to Downloads.</p>
       </div>
       <button class="icon-btn" id="gear" title="Settings">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -155,7 +158,7 @@
     <!-- impostazioni -->
     <div class="panel" id="settings" hidden>
       <div class="row">
-        <div class="grow"><b>Watch clipboard</b><small>Suggest SoundCloud/Spotify links when you copy them</small></div>
+        <div class="grow"><b>Watch clipboard</b><small>Suggest SoundCloud/YouTube/Spotify links when you copy them</small></div>
         <input type="checkbox" class="switch" id="opt-watch">
       </div>
       <div class="row">
@@ -225,6 +228,7 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '
 
 const source = url =>
   /^https?:\/\/([\w-]+\.)?(soundcloud\.com|snd\.sc)\//.test(url) ? 'sc' :
+  /^https?:\/\/(([\w-]+\.)?youtube\.com|youtu\.be)\//.test(url) ? 'yt' :
   /^https?:\/\/(open\.spotify\.com|spotify\.link)\//.test(url) ? 'sp' : null;
 
 // ---------- impostazioni (solo comodità locali) ----------
@@ -284,7 +288,7 @@ if (navigator.userAgent.includes('Windows')) $('.titlebar').style.height = '12px
 const updateBadge = () => {
   const s = source($('#url').value.trim());
   $('#badge').className = 'badge' + (s ? ' ' + s : '');
-  $('#badge').textContent = s === 'sc' ? 'SoundCloud' : s === 'sp' ? 'Spotify' : '';
+  $('#badge').textContent = ({ sc: 'SoundCloud', yt: 'YouTube', sp: 'Spotify' })[s] || '';
 };
 $('#url').addEventListener('input', updateBadge);
 
@@ -357,6 +361,8 @@ function qualityHtml(q) {
   return `<span class="q ${esc(q.label)}" title="${esc(tip)}">${esc(q.label)} quality${q.source ? ' · ' + esc(q.source) : ''}</span>`
     + (q.warning ? `<span class="q-warn" title="${esc(q.warning)}">⚠ check version</span>` : '');
 }
+const bpmHtml = bpm => bpm
+  ? `<span class="bpm" title="Estimated from the audio, could be half or double for some songs">${bpm} BPM</span>` : '';
 
 // ---------- download ----------
 function track(id, src) {
@@ -383,7 +389,7 @@ function track(id, src) {
     st.textContent = j.status === 'done' ? '✓ ' + j.message : j.message;
     st.className = 'status' + (j.status !== 'running' ? ' ' + j.status : '');
     const lastFile = j.files[j.files.length - 1];
-    if (lastFile) li.querySelector('.qual').innerHTML = qualityHtml(lastFile.quality);
+    if (lastFile) li.querySelector('.qual').innerHTML = qualityHtml(lastFile.quality) + bpmHtml(lastFile.bpm);
     if (j.status === 'running') return setTimeout(tick, 600);
 
     li.querySelector('.prog').style.display = 'none';
@@ -427,11 +433,11 @@ function renderHistory() {
   $('#hlist').innerHTML = items.length ? items.map(h => `
     <li class="item">
       <div class="art" style="${h.thumbnail ? `background-image:url('${esc(h.thumbnail)}')` : ''}">
-        <span class="src ${h.source === 'spotify' ? 'sp' : 'sc'}"></span></div>
+        <span class="src ${({ spotify: 'sp', youtube: 'yt' })[h.source] || 'sc'}"></span></div>
       <div class="meta">
         <div class="title">${esc(h.title)}</div>
         <div class="artist">${esc(h.artist)} · ${fmtDate(h.date)}${h.exists ? '' : ' · file moved or deleted'}</div>
-        ${qualityHtml(h.quality)}
+        ${qualityHtml(h.quality)}${bpmHtml(h.bpm)}
       </div>
       <div class="act">
         ${h.exists ? `<button class="btn" data-file="${esc(h.file)}">Show</button>` : ''}

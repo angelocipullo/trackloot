@@ -5,7 +5,7 @@
 <h1 align="center">TrackLoot</h1>
 
 <p align="center">
-  Paste a SoundCloud or Spotify link, get a tagged mp3 with artwork in your Downloads folder.<br>
+  Paste a SoundCloud, YouTube or Spotify link, get a tagged mp3 with artwork in your Downloads folder.<br>
   A tiny desktop app for macOS and Windows, built with Tauri.
 </p>
 
@@ -21,9 +21,10 @@
 
 ## Features
 
-- **SoundCloud & Spotify**: tracks, albums, playlists and sets.
+- **SoundCloud, YouTube & Spotify**: tracks, albums, playlists and sets.
 - **Artwork and tags embedded**: title, artist, cover (and album + track number for albums).
 - **Real quality check**: every download gets a *High / Medium / Low* label based on the source bitrate **and** a spectral analysis of the file, so a 128 kbps rip re-encoded to 320 is still flagged as low quality.
+- **BPM**: every track gets its tempo, shown in the app and written to the mp3's BPM tag (read by Rekordbox, Serato, Music…). It's estimated offline from the audio, no online service needed.
 - **No duplicates**: a local history remembers what you already downloaded. Re-pasting a link tells you it's already there; playlists and sets skip the tracks you already have.
 - **Clipboard watch**: copy a link anywhere and TrackLoot offers to download it (or downloads it straight away, if you turn on auto-download).
 - **Drag & drop**: drop a link from your browser or the Spotify app onto the window.
@@ -35,6 +36,7 @@
 | Source | What happens |
 |---|---|
 | **SoundCloud** | The original audio stream is downloaded with yt-dlp, converted to mp3 and tagged. |
+| **YouTube** | Same as SoundCloud, for videos, playlists and YouTube Music. Titles like *Artist - Song (Official Video)* become artist *Artist* and title *Song*, and the thumbnail is cropped to a square cover. A video link that also carries a playlist (`watch?v=…&list=…`) downloads just that video. |
 | **Spotify** | Spotify audio is DRM-protected, so TrackLoot reads the title, artists, length and artwork from Spotify's public embed page (no account or API key needed), finds the matching song on YouTube and tags the mp3 with Spotify's metadata. |
 
 To pick the right YouTube match, TrackLoot compares the length of the top 8 results with the Spotify length, and penalises results tagged *live*, *cover*, *remix*, *slowed*, *sped up* and similar (unless the Spotify title has those words too). If the chosen version's length differs from Spotify's by more than 5 seconds, you get a "check version" warning.
@@ -51,6 +53,10 @@ After each download, TrackLoot runs ffmpeg to measure the energy above 15, 16.5 
 | **Very low** | Heavily filtered audio |
 
 Hover the label to see the details: cutoff, source codec and bitrate, and the final file's bitrate.
+
+### BPM
+
+TrackLoot finds where the beats hit (sudden rises in the spectrum's energy) and looks for the period that repeats the most, between 70 and 180 BPM. Results are usually exact for electronic music and within ±1 BPM for songs played live. Like any tempo detector it can land on half or double the tempo for some songs: e.g. a 159 BPM song can be shown as 80.
 
 ## Download
 

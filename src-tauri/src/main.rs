@@ -1,13 +1,14 @@
-// TrackLoot: scarica musica da SoundCloud e Spotify con yt-dlp + ffmpeg.
+// TrackLoot: scarica musica da SoundCloud, YouTube e Spotify con yt-dlp + ffmpeg.
 //
-// SoundCloud: scarica l'audio originale.
+// SoundCloud e YouTube: scarica l'audio originale.
 // Spotify: legge titolo/artista/copertina dalla pagina pubblica, cerca il pezzo
 // su YouTube (scegliendo il risultato con la durata più vicina) e lo tagga.
 //
 // Ogni file scaricato finisce nella cronologia (history.json) con un controllo
-// di qualità: così non si riscaricano tracce già prese.
+// di qualità e i BPM: così non si riscaricano tracce già prese.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod bpm;
 mod tools;
 
 use regex::Regex;
@@ -52,6 +53,7 @@ struct Quality {
 struct FileResult {
     name: String,
     quality: Option<Quality>,
+    bpm: Option<u32>,
 }
 
 #[derive(Clone, Serialize)]
@@ -70,7 +72,7 @@ struct Job {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct HistoryEntry {
-    key: String, // "soundcloud:<id>" o "spotify:<id>"
+    key: String, // "soundcloud:<id>", "youtube:<id>" o "spotify:<id>"
     source: String,
     title: String,
     artist: String,
@@ -78,6 +80,8 @@ struct HistoryEntry {
     file: String,
     thumbnail: Option<String>,
     quality: Option<Quality>,
+    #[serde(default)]
+    bpm: Option<u32>,
     date: u64,
 }
 
@@ -141,13 +145,14 @@ fn history_has(key: &str) -> bool {
     HISTORY.lock().unwrap().iter().any(|e| e.key == key)
 }
 
-/// Archivio di yt-dlp per SoundCloud, rigenerato dalla cronologia:
-/// yt-dlp salta da solo le tracce già scaricate (utile per i set).
-fn write_sc_archive() -> PathBuf {
-    let path = data_dir().join("soundcloud-archive.txt");
+/// Archivio di yt-dlp per SoundCloud e YouTube, rigenerato dalla cronologia:
+/// yt-dlp salta da solo le tracce già scaricate (utile per set e playlist).
+fn write_archive() -> PathBuf {
+    let path = data_dir().join("download-archive.txt");
     let lines: String = HISTORY.lock().unwrap().iter()
-        .filter_map(|e| e.key.strip_prefix("soundcloud:"))
-        .map(|id| format!("soundcloud {id}\n"))
+        .filter_map(|e| e.key.split_once(':'))
+        .filter(|(src, _)| matches!(*src, "soundcloud" | "youtube"))
+        .map(|(src, id)| format!("{src} {id}\n"))
         .collect();
     let _ = fs::write(&path, lines);
     path
@@ -213,6 +218,14 @@ fn analyze(path: &Path, src_codec: Option<&str>, src_abr: Option<f64>, warning: 
     Some(Quality { label: label.into(), cutoff_khz, bitrate_kbps, source, warning })
 }
 
+/// Calcola i BPM e li scrive nel tag dell'mp3.
+fn add_bpm(jobs: &Jobs, id: &str, path: &Path) -> Option<u32> {
+    update(jobs, id, |j| j.message = "Finding BPM…".into());
+    let bpm = bpm::detect(path)?;
+    let _ = bpm::write_tag(path, bpm);
+    Some(bpm)
+}
+
 // ---------- yt-dlp ----------
 
 /// Esegue yt-dlp aggiornando la progress bar; con `show_tracks` mostra
@@ -222,7 +235,7 @@ fn run_ytdlp(jobs: &Jobs, id: &str, args: &[String], show_tracks: bool) -> (bool
         .args([
             "--newline", "--no-simulate", "--no-quiet", "--progress",
             "--progress-template", "download:PROG %(progress._percent_str)s",
-            "--print", "before_dl:INFO %(.{id,title,uploader,thumbnail,webpage_url,acodec,abr,duration})j",
+            "--print", "before_dl:INFO %(.{id,title,uploader,artist,track,thumbnail,webpage_url,acodec,abr,duration})j",
             "--print", "after_move:FILE %(filepath)s",
         ])
         .args(args)
@@ -238,7 +251,8 @@ fn run_ytdlp(jobs: &Jobs, id: &str, args: &[String], show_tracks: bool) -> (bool
     };
 
     let pct = Regex::new(r"([\d.]+)%").unwrap();
-    let archived = Regex::new(r"^\[download\] (?:[\w-]+: )?(.*) has already been recorded in the archive").unwrap();
+    // SoundCloud scrive "<id>: <titolo>", YouTube solo "<id>:"
+    let archived = Regex::new(r"^\[download\] (?:[\w-]+: )?(.*?):? has already been recorded in the archive").unwrap();
     // stdout e stderr letti insieme, riga per riga
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     let pipes: [Box<dyn Read + Send>; 2] = [
@@ -270,8 +284,8 @@ fn run_ytdlp(jobs: &Jobs, id: &str, args: &[String], show_tracks: bool) -> (bool
             } else if let Some(rest) = line.strip_prefix("INFO ") {
                 if let Ok(v) = serde_json::from_str::<Value>(rest) {
                     if show_tracks { j.tracks.push(Track {
-                        title: v["title"].as_str().unwrap_or("").into(),
-                        uploader: v["uploader"].as_str().unwrap_or("").into(),
+                        title: v["track"].as_str().or(v["title"].as_str()).unwrap_or("").into(),
+                        uploader: v["artist"].as_str().or(v["uploader"].as_str()).unwrap_or("").into(),
                         thumbnail: v["thumbnail"].as_str().map(String::from),
                     }); }
                     j.progress = 0.0;
@@ -292,19 +306,39 @@ fn run_ytdlp(jobs: &Jobs, id: &str, args: &[String], show_tracks: bool) -> (bool
     (ok, files)
 }
 
-// ---------- SoundCloud ----------
+// ---------- SoundCloud e YouTube ----------
 
-fn run_soundcloud(jobs: &Jobs, id: &str, url: &str, force: bool) {
-    let out = downloads_dir().join("%(uploader)s - %(title)s.%(ext)s");
+/// Scarica l'audio originale; `source` è "soundcloud" o "youtube".
+fn run_direct(jobs: &Jobs, id: &str, url: &str, source: &str, force: bool) {
+    // su YouTube il titolo spesso contiene già l'artista: se yt-dlp conosce
+    // artista e brano (canali "Topic", YouTube Music) usa quelli
+    let out = downloads_dir().join("%(artist,uploader)s - %(track,title)s.%(ext)s");
     let mut args: Vec<String> = [
         "-x", "--audio-format", "mp3", "--audio-quality", "0",
         "--embed-thumbnail", "--embed-metadata",
         "-o", &out.to_string_lossy(),
     ]
     .iter().map(|s| s.to_string()).collect();
+    if source == "youtube" {
+        args.extend([
+            // un link watch?v=…&list=… scarica solo il video, non tutta la playlist
+            "--no-playlist",
+            // copertina ritagliata quadrata come quelle degli album
+            "--convert-thumbnails", "jpg",
+            "--ppa", r#"ThumbnailsConvertor+FFmpeg_o:-c:v mjpeg -vf crop="'if(gt(ih,iw),iw,ih)':'if(gt(iw,ih),ih,iw)'""#,
+            // "Artista - Brano (Official Video)" → artista e brano separati e puliti
+            "--parse-metadata", r"title:^(?P<artist>.+?) [-–—] (?P<track>.+)$",
+            "--replace-in-metadata", "track",
+            r"\s*[(\[][^)\]]*\b(?i:official|lyrics?|audio|video|visuali[sz]er|hd|hq|4k|remaster(?:ed)?)\b[^)\]]*[)\]]", "",
+            "--replace-in-metadata", "uploader", " - Topic$", "",
+            // niente descrizione del video (link, testi, hashtag) nei tag
+            "--parse-metadata", ":(?P<meta_description>)",
+            "--parse-metadata", ":(?P<meta_synopsis>)",
+        ].map(String::from));
+    }
     if !force {
         args.push("--download-archive".into());
-        args.push(write_sc_archive().to_string_lossy().into_owned());
+        args.push(write_archive().to_string_lossy().into_owned());
     }
     args.push(url.into());
 
@@ -312,20 +346,23 @@ fn run_soundcloud(jobs: &Jobs, id: &str, url: &str, force: bool) {
     for (path, info) in files {
         update(jobs, id, |j| j.message = "Checking quality…".into());
         let s = |k: &str| info[k].as_str().unwrap_or("").to_string();
+        let or = |a: &str, b: &str| info[a].as_str().map(String::from).unwrap_or_else(|| s(b));
         let quality = analyze(Path::new(&path), info["acodec"].as_str(), info["abr"].as_f64(), None);
+        let bpm = add_bpm(jobs, id, Path::new(&path));
         let name = file_name(&path);
         add_history(HistoryEntry {
-            key: format!("soundcloud:{}", s("id")),
-            source: "soundcloud".into(),
-            title: s("title"),
-            artist: s("uploader"),
+            key: format!("{source}:{}", s("id")),
+            source: source.into(),
+            title: or("track", "title"),
+            artist: or("artist", "uploader"),
             url: s("webpage_url"),
             file: name.clone(),
             thumbnail: info["thumbnail"].as_str().map(String::from),
             quality: quality.clone(),
+            bpm,
             date: now(),
         });
-        update(jobs, id, |j| j.files.push(FileResult { name, quality }));
+        update(jobs, id, |j| j.files.push(FileResult { name, quality, bpm }));
     }
 }
 
@@ -516,6 +553,7 @@ fn spotify_track(jobs: &Jobs, id: &str, it: &SpotifyItem, n: usize,
     let warning = (diff > 5.0).then(|| format!(
         "Length differs from Spotify by {}s: might be a different version", diff.round()));
     let quality = analyze(&dest, info["acodec"].as_str(), info["abr"].as_f64(), warning);
+    let bpm = add_bpm(jobs, id, &dest);
 
     add_history(HistoryEntry {
         key: format!("spotify:{}", it.id),
@@ -526,21 +564,28 @@ fn spotify_track(jobs: &Jobs, id: &str, it: &SpotifyItem, n: usize,
         file: name.clone(),
         thumbnail: cover,
         quality: quality.clone(),
+        bpm,
         date: now(),
     });
-    update(jobs, id, |j| j.files.push(FileResult { name, quality }));
+    update(jobs, id, |j| j.files.push(FileResult { name, quality, bpm }));
     Ok(())
 }
 
 // ---------- job ----------
+
+fn is_youtube(url: &str) -> bool {
+    Regex::new(r"^https?://(([\w-]+\.)?youtube\.com|youtu\.be)/").unwrap().is_match(url)
+}
 
 fn run_job(jobs: Jobs, id: String, url: String, force: bool) {
     if url.contains("spotify.") {
         if let Err(e) = run_spotify(&jobs, &id, &url, force) {
             update(&jobs, &id, |j| j.message = format!("Error: {e}"));
         }
+    } else if is_youtube(&url) {
+        run_direct(&jobs, &id, &url, "youtube", force);
     } else {
-        run_soundcloud(&jobs, &id, &url, force);
+        run_direct(&jobs, &id, &url, "soundcloud", force);
     }
     update(&jobs, &id, |j| {
         let extra = |j: &Job| {
@@ -560,10 +605,12 @@ fn run_job(jobs: Jobs, id: String, url: String, force: bool) {
             } else {
                 format!("All {} tracks already downloaded", j.skipped.len())
             };
-            // per i doppioni di SoundCloud mostriamo copertina e artista dalla cronologia
+            // per i doppioni di SoundCloud e YouTube mostriamo copertina e artista dalla cronologia
             if j.tracks.is_empty() {
                 let h = HISTORY.lock().unwrap();
-                if let Some(e) = h.iter().rev().find(|e| e.title == j.skipped[0]) {
+                let s = j.skipped[0].clone();
+                if let Some(e) = h.iter().rev().find(|e| e.title == s || e.key.split_once(':').is_some_and(|k| k.1 == s)) {
+                    j.skipped[0] = e.title.clone();
                     j.tracks.push(Track {
                         title: e.title.clone(),
                         uploader: e.artist.clone(),
@@ -590,11 +637,11 @@ fn run_job(jobs: Jobs, id: String, url: String, force: bool) {
 fn start_download(url: String, force: bool, state: tauri::State<AppState>) -> Result<String, String> {
     let url = url.trim().to_string();
     let valid = Regex::new(
-        r"^https?://(([\w-]+\.)?(soundcloud\.com|snd\.sc)|open\.spotify\.com|spotify\.link)/",
+        r"^https?://(([\w-]+\.)?(soundcloud\.com|snd\.sc|youtube\.com)|youtu\.be|open\.spotify\.com|spotify\.link)/",
     )
     .unwrap();
     if !valid.is_match(&url) {
-        return Err("Paste a SoundCloud or Spotify link".into());
+        return Err("Paste a SoundCloud, YouTube or Spotify link".into());
     }
     let id = state.counter.fetch_add(1, Ordering::Relaxed).to_string();
     state.jobs.lock().unwrap().insert(id.clone(), Job {
